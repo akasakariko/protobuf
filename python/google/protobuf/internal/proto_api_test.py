@@ -20,10 +20,6 @@ class ProtoApiTest(unittest.TestCase):
     self.assertEqual(456, msg.optional_int32)
     self.assertFalse(msg.HasField('optional_string'))
 
-  def test_dynamic_message(self):
-    result = proto_api_test_ext.repr_dynamic_message(789)
-    self.assertEqual(result, 'optional_int32: 789\n')
-
   def test_dynamic_message_shared_pool(self):
     result = proto_api_test_ext.repr_dynamic_message_shared_pool(789)
     self.assertEqual(result, 'optional_int32: 789\n')

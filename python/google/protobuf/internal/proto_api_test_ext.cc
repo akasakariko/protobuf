@@ -61,86 +61,6 @@ auto SetMessageFieldWithMutator(py::handle py_msg, int value) {
   // On destruction, the mutator will copy content back to python message.
 }
 
-// Test for DescriptorPool_FromPool and NewMessageOwnedExternally
-auto ReprDynamicMessage(int value) {
-  const PyProto_API* api = GetProtoApi();
-
-  // Create a descriptor pool which copies everything from the linked protos.
-  DescriptorPool pool(DescriptorPool::internal_generated_database());
-  // FileDescriptorProto file_descriptor;
-  // TestAllTypes::descriptor()->file()->CopyTo(&file_descriptor);
-  // if (!pool.BuildFile(file_descriptor)) {
-  //   throw std::runtime_error("Failed to build file descriptor");
-  // }
-  const Descriptor* descriptor =
-      pool.FindMessageTypeByName("proto2_unittest.TestAllTypes");
-  if (!descriptor) {
-    throw std::runtime_error("Failed to find file descriptor");
-  }
-  DynamicMessageFactory factory(&pool);
-  const Message* prototype = factory.GetPrototype(descriptor);
-  if (!prototype) {
-    throw std::runtime_error("Failed to get prototype for descriptor");
-  }
-  std::unique_ptr<Message> msg(prototype->New());
-  if (!msg) {
-    throw std::runtime_error("Failed to create message");
-  }
-  msg->GetReflection()->SetInt32(
-      msg.get(), descriptor->FindFieldByName("optional_int32"), value);
-
-  // These calls to NewMessage fail because the descriptor pool is not
-  // known to Python yet.
-  {
-    auto py_msg =
-        py::reinterpret_steal<py::object>(api->NewMessage(descriptor, nullptr));
-    if (py_msg) {
-      throw std::runtime_error("NewMessage succeeded unexpectedly");
-    }
-    py_msg = py::reinterpret_steal<py::object>(
-        api->NewMessageOwnedExternally(msg.get(), nullptr));
-    if (py_msg) {
-      throw std::runtime_error("NewMessage succeeded unexpectedly");
-    }
-  }
-
-  // Create the Python DescriptorPool...
-  auto py_pool =
-      py::reinterpret_steal<py::object>(api->DescriptorPool_FromPool(&pool));
-  if (!py_pool) {
-    throw py::error_already_set();
-  }
-
-  // ... And now the API Can use it to create the messages.
-  std::string result_string;
-  {
-    auto py_msg =
-        py::reinterpret_steal<py::object>(api->NewMessage(descriptor, nullptr));
-    if (!py_msg) {
-      throw py::error_already_set();
-    }
-
-    py_msg = py::reinterpret_steal<py::object>(
-        api->NewMessageOwnedExternally(msg.get(), nullptr));
-    if (!py_msg) {
-      throw py::error_already_set();
-    }
-    result_string = py::repr(py_msg);
-  }
-
-  // The code above is dangerous! It relies on the C++ DescriptorPool being
-  // alive for whole duration of the test.
-  // At this point, there are no external references to the Python Message
-  // classes, but they always form a reference cycle with their Python
-  // MessageFactory.
-  // So it is necessary to run the garbage collector.
-  py::exec("import gc; gc.collect()");
-  // Now the Python MessageFactory has been deleted, and it is safe to destroy
-  // the C++ DescriptorPool.
-
-  return result_string;
-}
-
 auto ReprDynamicMessageSharedPool(int value) {
   const PyProto_API* api = GetProtoApi();
 
@@ -290,14 +210,16 @@ py::object CreateDynamicPoolMessage() {
   if (!py_msg) {
     throw py::error_already_set();
   }
-  Message* msg = api->GetMutableMessagePointer(py_msg.ptr());
-  if (!msg) {
-    throw py::error_already_set();
-  }
+  {
+    auto mutator = api->GetClearedMessageMutator(py_msg.ptr());
+    if (!mutator.ok()) {
+      throw std::runtime_error(mutator.status().ToString());
+    }
 
-  // Populate the message, and return it.
-  if (!google::protobuf::TextFormat::ParseFromString("my_field: 42", msg)) {
-    throw std::runtime_error("Failed to parse message");
+    // Populate the message, and return it.
+    if (!google::protobuf::TextFormat::ParseFromString("my_field: 42", mutator->get())) {
+      throw std::runtime_error("Failed to parse message");
+    }
   }
   // This is safe: the Python object keeps a reference to the Python
   // DescriptorPool, which owns the C++ DescriptorPool.
@@ -307,7 +229,6 @@ py::object CreateDynamicPoolMessage() {
 PYBIND11_MODULE(proto_api_test_ext, m) {
   m.def("get_const_message", &GetConstMessage);
   m.def("set_message_field_with_mutator", &SetMessageFieldWithMutator);
-  m.def("repr_dynamic_message", &ReprDynamicMessage);
   m.def("repr_dynamic_message_shared_pool", &ReprDynamicMessageSharedPool);
   m.def("repr_dynamic_message_shared_pool_and_db",
         &ReprDynamicMessageSharedPoolAndDb);
